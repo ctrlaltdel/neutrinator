@@ -1,0 +1,269 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import re
+from pprint import pprint, pformat
+from subprocess import check_output
+from novaclient.v1_1 import client as nova_client
+from neutronclient.v2_0 import client as neutron_client
+
+domain = None
+
+def pindent(text, indentation=0):
+  for line in text.split('\n'):
+    print ' ' * indentation + line
+
+def tcpdump_dhcp(host, interface, mac):
+  mac_filter = '0x' + mac[6:].replace(':', '')
+  cmd = 'tcpdump -c 1 -i %s -vvv -s 1500 "((port 67 or port 68) and (udp[38:4] = %s))"' % (interface, mac_filter)
+  print cmd
+  #cmd = 'tcpdump -c 1 -i %s -vvv -s 1500 "(port 67 or port 68)"' % (interface)
+  return check_output(['ssh', 'root@%s' % host, cmd])
+
+def ssh(host, cmd):
+  return check_output(['ssh', 'root@%s' % host, cmd])
+
+def fqdn(nova, host):
+  global domain
+
+  if not domain:
+    raise Exception('No domain detected')
+
+  # HACK: hostname from neutron API is not fully qualified anymore
+  if not '.' in host:
+    fqdn = host + '.' + domain
+  else:
+    fqdn = host
+
+  return fqdn
+
+def get_router_path(neutron, network_id):
+  router_path = []
+
+  try:
+    router_port = neutron.list_ports(network_id=network_id, device_owner='network:router_interface')['ports'][0]
+    print router_port
+
+    router_id = router_port['device_id']
+
+    l3_node = neutron.list_l3_agent_hosting_routers(router_id)['agents'][0]['host']
+    l3_node = fqdn(nova, l3_node)
+
+    router_path.append((l3_node, 'TODO'))
+
+    qr = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qr-%s | awk '{ print $2; }' | cut -d: -f1" % (router_id, router_port['id'][:11])).strip()
+    qg = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qg | awk '{ print $2; }' | cut -d: -f1" % router_id).strip()
+
+    router_path.append((l3_node, qr, router_port['status']))
+    router_path.append((l3_node, qg, router_port['status']))
+
+    bridge = ssh(l3_node, 'ovs-vsctl port-to-br %s' % qg).strip()
+    tag = ssh(l3_node, 'ovs-vsctl get port %s tag' % qg).strip()
+
+    router_path.append((l3_node, '%s VLAN %s' % (bridge, tag)))
+
+    external_port = ssh(l3_node, "ovs-vsctl list-ports %s | egrep -v 'qg-|phy-'" % bridge).strip()
+
+    router_path.append((l3_node, external_port))
+  except:
+    pass
+
+  return router_path
+
+def get_dhcp_path(neutron, network_id):
+  path = []
+
+  node = neutron.list_dhcp_agent_hosting_networks(network_id)['agents'][0]['host']
+  node = fqdn(nova, node)
+
+  path.append((node, 'TODO'))
+
+  dhcp_ports = neutron.list_ports(network_id=network_id, device_owner='network:dhcp')['ports']
+  print dhcp_ports
+
+  if len(dhcp_ports) != 1:
+    raise Exception('no support for multiple DHCP servers')
+
+  print 'Routing table:'
+  pindent(ssh(node, 'ip netns exec qdhcp-%s ip ro ls' % (network_id)), 2)
+
+  dhcp_interface = ssh(node, "ip netns exec qdhcp-%s ip link ls | grep tap | awk '{ print $2; }' | cut -d: -f1" % network_id).strip()
+
+  path.append((node, dhcp_interface, dhcp_ports[0]['status']))
+
+  return path
+
+def get_instance_path(nova, neutron, instance_id):
+  def on_compute(cmd):
+    return ssh(compute_node, cmd)
+
+  path = []
+
+  instance = nova.servers.get(instance_id)
+  
+  compute_node = getattr(instance, 'OS-EXT-SRV-ATTR:hypervisor_hostname')
+
+  global domain
+  domain = '.'.join(compute_node.split('.')[1:])
+
+  path.append((instance.name, 'eth0'))
+  
+  print
+  print '== INSTANCE =='
+  print
+  print 'ID: ', instance.id
+  print 'Name: ', instance.name
+  
+  print 'Console log:'
+  for line in nova.servers.get_console_output(instance_id).split('\n'):
+    if line.startswith('ci-info:'):
+      print '  ', line
+  
+  print 'Ports:'
+  ports = neutron.list_ports(device_id=instance_id)['ports']
+
+  if len(ports) > 1:
+    raise Exception("This program doesn't currently supports multiple interfaces connected to a single VM")
+  
+  port = ports[0]
+
+  print '  Port: ', port['id']
+
+  if len(port['fixed_ips']) > 1:
+    raise Exception("This program doesn't currently support multiple IP addresses per interface")
+
+  fixed_ip = port['fixed_ips'][0]
+  print '    IP: ', fixed_ip['ip_address']
+  
+  subnet = fixed_ip['subnet_id']
+  print '    Subnet: ', subnet
+  
+  for line in pformat(neutron.show_subnet(subnet)).split('\n'):
+    print '      ', line
+
+  network_id = neutron.show_subnet(subnet)['subnet']['network_id']
+
+  if len(neutron.list_dhcp_agent_hosting_networks(network_id)['agents']) != 1:
+    raise Exception("This program supports only a single DHCP agent")
+
+  print
+  print '== COMPUTE NODE =='
+  print
+  
+  print 'Compute node: ', compute_node
+  
+ 
+  print 'Libvirt domain info:'
+  pindent(on_compute('virsh dominfo %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name')), 2)
+  
+  print 'Libvirt domain interfaces list:'
+  domiflist = on_compute('virsh domiflist %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name'))
+  pindent(domiflist, 2)
+  
+  libvirt_interfaces = domiflist.split('\n')[2:-2]
+
+  if len(libvirt_interfaces) != 1:
+    raise Exception('This program supports only a single libvirt interface per vm')
+
+  intf = libvirt_interfaces[0]
+  (interface, type, source, model, mac) = re.split('\s+', intf)
+
+  path.append((compute_node, interface, port['status']))
+  
+  #print 'tcpdump on %s' % interface
+  #print on_compute('tcpdump -c 5 -ni %s' % interface)
+  
+  path.append((compute_node, source))
+  
+  #print 'tcpdump on %s' % source
+  #print on_compute('tcpdump -c 5 -ni %s' % source)
+
+  brctl_show = on_compute('brctl show %s' % source)
+  qvb = re.findall('(qvb.+)', brctl_show)[0]
+
+  path.append((compute_node, qvb))
+
+  # FIXME: is there a better way to find if qvo interface actually
+  # exists and is correctly configured?
+  qvo = qvb.replace('qvb', 'qvo')
+
+  path.append((compute_node, qvo))
+
+  bridge = on_compute('ovs-vsctl port-to-br %s' % qvo).strip()
+  tag = on_compute('ovs-vsctl get port %s tag' % qvo).strip()
+
+  path.append((compute_node, '%s VLAN %s' % (bridge, tag)))
+
+  # Tunneling (GRE, VXLAN)
+  tun = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge_tun, tag))
+
+  # VLAN
+  vlan = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge_vlan, tag))
+
+  if tun and not vlan:
+    print "GRE"
+    actions = re.findall('(actions=[^ ]+)', tun)[0].strip()
+    path.append((compute_node, '%s %s' % (bridge_tun, actions)))
+  elif vlan and not tun:
+    print "VLAN"
+    actions = re.findall('(actions=[^ ]+)', vlan)[0].strip()
+    path.append((compute_node, '%s %s' % (bridge_vlan, actions)))
+  else:
+    raise Exception('What happenend?')
+
+  print 'KVM process:'
+  pindent(on_compute('ps ax | grep [%s]%s' % (instance_id[0], instance_id[1:])), 2)
+ 
+  #print tcpdump_dhcp(compute_node, interface, mac)
+
+  return network_id, path
+
+def init_nova():
+  return nova_client.Client(
+    os.environ['OS_USERNAME'],
+    os.environ['OS_PASSWORD'],
+    os.environ['OS_TENANT_NAME'],
+    os.environ['OS_AUTH_URL'],
+    service_type="compute")
+
+def init_neutron():
+  return neutron_client.Client(
+    username=os.environ['OS_USERNAME'],
+    password=os.environ['OS_PASSWORD'],
+    tenant_name=os.environ['OS_TENANT_NAME'],
+    auth_url=os.environ['OS_AUTH_URL'])
+
+
+if __name__ == '__main__':
+  bridge_vlan = 'br-ex'
+  bridge_tun = 'br-tun'
+  bridge_int = 'br-int'
+
+  nova = init_nova()  
+  neutron = init_neutron()
+   
+  instance_id = sys.argv[1]
+
+  network_id, instance_path = get_instance_path(nova, neutron, instance_id)
+
+  dhcp_path = get_dhcp_path(neutron, network_id)
+
+  router_path = get_router_path(neutron, network_id)
+
+  print
+  print '== NETWORK PATH =='
+  print
+  
+  print 'INSTANCE:'
+# http://openstack.redhat.com/Networking_in_too_much_detail
+  pindent('\n'.join(('\t'.join(a) for a in instance_path)), 2)
+  print
+
+  print 'DHCP:'
+  pindent('\n'.join(('\t'.join(a) for a in dhcp_path)), 2)
+  print
+
+  print 'L3 ROUTER:'
+  pindent('\n'.join(('\t'.join(a) for a in router_path)), 2)
+  print
