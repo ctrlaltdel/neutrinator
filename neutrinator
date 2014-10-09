@@ -210,7 +210,8 @@ def get_instance_path(nova, neutron, instance_id):
     actions = re.findall('(actions=[^ ]+)', vlan)[0].strip()
     path.append((compute_node, '%s %s' % (bridge_vlan, actions)))
   else:
-    raise Exception('What happenend?')
+    raise Exception('What happenend? bridge_tun: %s, bridge_vlan: %s,
+    tag: %s, tun: %s, vlan: %s' % (bridge_tun, bridge_vlan, tag, tun, vlan))
 
   print 'KVM process:'
   pindent(on_compute('ps ax | grep [%s]%s' % (instance_id[0], instance_id[1:])), 2)
