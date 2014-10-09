@@ -3,6 +3,8 @@
 import os
 import sys
 import re
+import argparse
+import logging
 from pprint import pprint, pformat
 from subprocess import check_output
 from novaclient.v1_1 import client as nova_client
@@ -17,12 +19,15 @@ def pindent(text, indentation=0):
 def tcpdump_dhcp(host, interface, mac):
   mac_filter = '0x' + mac[6:].replace(':', '')
   cmd = 'tcpdump -c 1 -i %s -vvv -s 1500 "((port 67 or port 68) and (udp[38:4] = %s))"' % (interface, mac_filter)
-  print cmd
+  logging.debug(cmd)
   #cmd = 'tcpdump -c 1 -i %s -vvv -s 1500 "(port 67 or port 68)"' % (interface)
   return check_output(['ssh', 'root@%s' % host, cmd])
 
 def ssh(host, cmd):
-  return check_output(['ssh', 'root@%s' % host, cmd])
+  logging.debug('ssh(%s, %s)' % (host, cmd))
+  result = check_output(['ssh', 'root@%s' % host, cmd])
+  logging.debug(result)
+  return result
 
 def fqdn(nova, host):
   global domain
@@ -43,7 +48,7 @@ def get_router_path(neutron, network_id):
 
   try:
     router_port = neutron.list_ports(network_id=network_id, device_owner='network:router_interface')['ports'][0]
-    print router_port
+    logging.debug(router_port)
 
     router_id = router_port['device_id']
 
@@ -80,13 +85,13 @@ def get_dhcp_path(neutron, network_id):
   path.append((node, 'TODO'))
 
   dhcp_ports = neutron.list_ports(network_id=network_id, device_owner='network:dhcp')['ports']
-  print dhcp_ports
+  logging.debug(dhcp_ports)
 
   if len(dhcp_ports) != 1:
     raise Exception('no support for multiple DHCP servers')
 
-  print 'Routing table:'
-  pindent(ssh(node, 'ip netns exec qdhcp-%s ip ro ls' % (network_id)), 2)
+  logging.debug('Routing table:')
+  logging.debug((ssh(node, 'ip netns exec qdhcp-%s ip ro ls' % (network_id)), 2))
 
   dhcp_interface = ssh(node, "ip netns exec qdhcp-%s ip link ls | grep tap | awk '{ print $2; }' | cut -d: -f1" % network_id).strip()
 
@@ -109,18 +114,13 @@ def get_instance_path(nova, neutron, instance_id):
 
   path.append((instance.name, 'eth0'))
   
-  print
-  print '== INSTANCE =='
-  print
-  print 'ID: ', instance.id
-  print 'Name: ', instance.name
+  logging.debug('Instance ID: %s, Name: %s' % (instance.id, instance.name))
   
-  print 'Console log:'
+  logging.debug('Console log')
   for line in nova.servers.get_console_output(instance_id).split('\n'):
     if line.startswith('ci-info:'):
-      print '  ', line
+      logging.debug(line)
   
-  print 'Ports:'
   ports = neutron.list_ports(device_id=instance_id)['ports']
 
   if len(ports) > 1:
@@ -128,19 +128,19 @@ def get_instance_path(nova, neutron, instance_id):
   
   port = ports[0]
 
-  print '  Port: ', port['id']
+  logging.debug('Port: ' + port['id'])
 
   if len(port['fixed_ips']) > 1:
     raise Exception("This program doesn't currently support multiple IP addresses per interface")
 
   fixed_ip = port['fixed_ips'][0]
-  print '    IP: ', fixed_ip['ip_address']
+  logging.debug('IP: ' + fixed_ip['ip_address'])
   
   subnet = fixed_ip['subnet_id']
-  print '    Subnet: ', subnet
+  logging.debug('Subnet: ' + subnet)
   
   for line in pformat(neutron.show_subnet(subnet)).split('\n'):
-    print '      ', line
+    logging.debug(line)
 
   network_id = neutron.show_subnet(subnet)['subnet']['network_id']
 
@@ -154,12 +154,12 @@ def get_instance_path(nova, neutron, instance_id):
   print 'Compute node: ', compute_node
   
  
-  print 'Libvirt domain info:'
-  pindent(on_compute('virsh dominfo %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name')), 2)
+  logging.debug('Libvirt domain info:')
+  logging.debug(on_compute('virsh dominfo %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name')))
   
-  print 'Libvirt domain interfaces list:'
+  logging.debug('Libvirt domain interfaces list:')
   domiflist = on_compute('virsh domiflist %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name'))
-  pindent(domiflist, 2)
+  logging.debug(domiflist)
   
   libvirt_interfaces = domiflist.split('\n')[2:-2]
 
@@ -181,25 +181,31 @@ def get_instance_path(nova, neutron, instance_id):
 
   brctl_show = on_compute('brctl show %s' % source)
   qvb = re.findall('(qvb.+)', brctl_show)[0]
+  logging.debug('qvb: %s', qvb)
 
   path.append((compute_node, qvb))
 
   # FIXME: is there a better way to find if qvo interface actually
   # exists and is correctly configured?
   qvo = qvb.replace('qvb', 'qvo')
+  logging.debug('qvo: %s', qvo)
 
   path.append((compute_node, qvo))
 
   bridge = on_compute('ovs-vsctl port-to-br %s' % qvo).strip()
+  logging.debug('bridge: %s', bridge)
   tag = on_compute('ovs-vsctl get port %s tag' % qvo).strip()
+  logging.debug('tag: %s', tag)
 
   path.append((compute_node, '%s VLAN %s' % (bridge, tag)))
 
   # Tunneling (GRE, VXLAN)
   tun = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge_tun, tag))
+  logging.debug('tun: %s', tun)
 
   # VLAN
   vlan = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge_vlan, tag))
+  logging.debug('vlan: %s', vlan)
 
   if tun and not vlan:
     print "GRE"
@@ -210,10 +216,10 @@ def get_instance_path(nova, neutron, instance_id):
     actions = re.findall('(actions=[^ ]+)', vlan)[0].strip()
     path.append((compute_node, '%s %s' % (bridge_vlan, actions)))
   else:
-    raise Exception('What happenend? bridge_tun: %s, bridge_vlan: %s, tag: %s, tun: %s, vlan: %s' % (bridge_tun, bridge_vlan, tag, tun, vlan))
+    raise Exception('What happenend?')
 
-  print 'KVM process:'
-  pindent(on_compute('ps ax | grep [%s]%s' % (instance_id[0], instance_id[1:])), 2)
+  logging.debug('KVM process:')
+  logging.debug(on_compute('ps ax | grep [%s]%s' % (instance_id[0], instance_id[1:])))
  
   #print tcpdump_dhcp(compute_node, interface, mac)
 
@@ -236,6 +242,16 @@ def init_neutron():
 
 
 if __name__ == '__main__':
+  parser = argparse.ArgumentParser(description='Neutrinator is a tool which helps you seeing through the virtual network maze')
+  parser.add_argument('--debug', '-d', action='store_true')
+
+  parser.add_argument('instance_id')
+  args = parser.parse_args()
+
+  if args.debug:
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
   bridge_vlan = 'br-ex'
   bridge_tun = 'br-tun'
   bridge_int = 'br-int'
@@ -243,9 +259,7 @@ if __name__ == '__main__':
   nova = init_nova()  
   neutron = init_neutron()
    
-  instance_id = sys.argv[1]
-
-  network_id, instance_path = get_instance_path(nova, neutron, instance_id)
+  network_id, instance_path = get_instance_path(nova, neutron, args.instance_id)
 
   dhcp_path = get_dhcp_path(neutron, network_id)
 
