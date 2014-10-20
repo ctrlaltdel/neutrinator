@@ -61,31 +61,32 @@ def get_router(neutron, network_id):
 
   try:
     router_port = neutron.list_ports(network_id=network_id, device_owner='network:router_interface')['ports'][0]
-    logging.debug(router_port)
-
-    router_id = router_port['device_id']
-
-    l3_node = neutron.list_l3_agent_hosting_routers(router_id)['agents'][0]['host']
-    l3_node = fqdn(nova, l3_node)
-
-    router_path.append((l3_node, 'TODO'))
-
-    qr = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qr-%s | awk '{ print $2; }' | cut -d: -f1" % (router_id, router_port['id'][:11])).strip()
-    qg = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qg | awk '{ print $2; }' | cut -d: -f1" % router_id).strip()
-
-    router_path.append((l3_node, qr, router_port['status']))
-    router_path.append((l3_node, qg, router_port['status']))
-
-    bridge, tag = get_bridge_tag(l3_node, qg)
-
-    router_path.append((l3_node, '%s VLAN %s' % (bridge, tag)))
-
-    external_port = ssh(l3_node, "ovs-vsctl list-ports %s | egrep -v 'qg-|phy-'" % bridge).strip()
-
-    router_path.append((l3_node, external_port))
   except:
     logging.warn('No virtual router found')
     return None, None
+
+  logging.debug(router_port)
+
+  router_id = router_port['device_id']
+
+  l3_node = neutron.list_l3_agent_hosting_routers(router_id)['agents'][0]['host']
+  l3_node = fqdn(nova, l3_node)
+
+  router_path.append((l3_node, 'TODO'))
+
+  qr = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qr-%s | awk '{ print $2; }' | cut -d: -f1" % (router_id, router_port['id'][:11])).strip()
+  qg = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qg | awk '{ print $2; }' | cut -d: -f1" % router_id).strip()
+
+  router_path.append((l3_node, qr, router_port['status']))
+  router_path.append((l3_node, qg, router_port['status']))
+
+  bridge, tag = get_bridge_tag(l3_node, qg)
+
+  router_path.append((l3_node, '%s VLAN %s' % (bridge, tag)))
+
+  external_port = ssh(l3_node, "ovs-vsctl list-ports %s | egrep -v 'qg-|phy-'" % bridge).strip()
+
+  router_path.append((l3_node, external_port))
 
   return router_path, router_id
 
