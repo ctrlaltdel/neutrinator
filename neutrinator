@@ -169,7 +169,11 @@ def get_instance_path(nova, neutron, instance_id):
   intf = libvirt_interfaces[0]
   (interface, type, source, model, mac) = re.split('\s+', intf)
 
-  path.append((compute_node, interface, port['status']))
+  path.append((
+    compute_node,
+    interface,
+    'STATUS: %s, MAC: %s' % (port['status'], port['mac_address'])
+  ))
   
   #print 'tcpdump on %s' % interface
   #print on_compute('tcpdump -c 5 -ni %s' % interface)
