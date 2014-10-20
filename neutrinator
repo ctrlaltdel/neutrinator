@@ -203,24 +203,19 @@ def get_instance_path(nova, neutron, instance_id):
 
   path.append((compute_node, '%s VLAN %s' % (bridge, tag)))
 
-  # Tunneling (GRE, VXLAN)
-  tun = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge_tun, tag))
-  logging.debug('tun: %s', tun)
+  # Find out where the integration bridge is connected to
+  bridges = on_compute('ovs-vsctl list-ifaces %s | egrep "^int-" | sed "s/^int-//"' % bridge_int).split('\n')[0:-1]
 
-  # VLAN
-  vlan = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge_vlan, tag))
-  logging.debug('vlan: %s', vlan)
+  logging.debug('briges connected to the integration bridge: %s' % repr(bridges))
 
-  if tun and not vlan:
-    print "GRE"
-    actions = re.findall('(actions=[^ ]+)', tun)[0].strip()
-    path.append((compute_node, '%s %s' % (bridge_tun, actions)))
-  elif vlan and not tun:
-    print "VLAN"
-    actions = re.findall('(actions=[^ ]+)', vlan)[0].strip()
-    path.append((compute_node, '%s %s' % (bridge_vlan, actions)))
-  else:
-    raise Exception('What happenend?')
+  for bridge in bridges:
+    flow = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge, tag))
+    logging.debug('flow: %s', repr(flow))
+
+    if flow != '':
+      actions = re.findall('(actions=[^ ]+)', flow)
+      if actions:
+        path.append((compute_node, '%s %s' % (bridge, actions[0].strip())))
 
   logging.debug('KVM process:')
   logging.debug(on_compute('ps ax | grep [%s]%s' % (instance_id[0], instance_id[1:])))
@@ -256,8 +251,6 @@ if __name__ == '__main__':
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
 
-  bridge_vlan = 'br-ex'
-  bridge_tun = 'br-tun'
   bridge_int = 'br-int'
 
   nova = init_nova()  
