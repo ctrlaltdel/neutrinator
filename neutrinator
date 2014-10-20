@@ -43,7 +43,7 @@ def fqdn(nova, host):
 
   return fqdn
 
-def get_router_path(neutron, network_id):
+def get_router(neutron, network_id):
   router_path = []
 
   try:
@@ -74,7 +74,7 @@ def get_router_path(neutron, network_id):
   except:
     pass
 
-  return router_path
+  return router_path, router_id
 
 def get_dhcp_path(neutron, network_id):
   path = []
@@ -267,7 +267,7 @@ if __name__ == '__main__':
 
   dhcp_path = get_dhcp_path(neutron, network_id)
 
-  router_path = get_router_path(neutron, network_id)
+  router_path, router_id = get_router(neutron, network_id)
 
   print
   print '== NETWORK PATH =='
@@ -282,6 +282,6 @@ if __name__ == '__main__':
   pindent('\n'.join(('\t'.join(a) for a in dhcp_path)), 2)
   print
 
-  print 'L3 ROUTER:'
+  print 'L3 ROUTER (%s):' % router_id
   pindent('\n'.join(('\t'.join(a) for a in router_path)), 2)
   print
