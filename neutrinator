@@ -56,6 +56,17 @@ def get_bridge_tag(node, interface):
 
   return bridge, tag
 
+def get_ovs_path(node, interface):
+  path = []
+
+  bridge, tag = get_bridge_tag(node, interface)
+  path.append((node, '%s VLAN %s' % (bridge, tag)))
+
+  bridge, actions = find_outgoing_bridge(bridge, tag)
+  path.append((compute_node, '%s %s' % (bridge, actions)))
+
+  return path
+
 def get_router(neutron, network_id):
   router_path = []
 
@@ -91,8 +102,6 @@ def get_router(neutron, network_id):
   return router_path, router_id
 
 def get_dhcp_path(neutron, network_id):
-  path = []
-
   node = neutron.list_dhcp_agent_hosting_networks(network_id)['agents'][0]['host']
   node = fqdn(nova, node)
 
@@ -107,15 +116,9 @@ def get_dhcp_path(neutron, network_id):
 
   dhcp_interface = ssh(node, "ip netns exec qdhcp-%s ip link ls | grep tap | awk '{ print $2; }' | cut -d: -f1" % network_id).strip()
 
+  path = []
   path.append((node, dhcp_interface, dhcp_ports[0]['status']))
-
-  bridge, tag = get_bridge_tag(node, dhcp_interface)
-
-  path.append((node, '%s VLAN %s' % (bridge, tag)))
-
-  bridge, actions = find_outgoing_bridge(bridge_int, tag)
-
-  path.append((compute_node, '%s %s' % (bridge, actions)))
+  path += get_ovs_path(node, dhcp_interface)
 
   return path
 
