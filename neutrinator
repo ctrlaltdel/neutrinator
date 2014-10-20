@@ -113,6 +113,10 @@ def get_dhcp_path(neutron, network_id):
 
   path.append((node, '%s VLAN %s' % (bridge, tag)))
 
+  bridge, actions = find_outgoing_bridge(bridge_int, tag)
+
+  path.append((compute_node, '%s %s' % (bridge, actions)))
+
   return path
 
 def find_outgoing_bridge(bridge, tag):
