@@ -76,8 +76,7 @@ def get_router(neutron, network_id):
     router_path.append((l3_node, qr, router_port['status']))
     router_path.append((l3_node, qg, router_port['status']))
 
-    bridge = ssh(l3_node, 'ovs-vsctl port-to-br %s' % qg).strip()
-    tag = ssh(l3_node, 'ovs-vsctl get port %s tag' % qg).strip()
+    bridge, tag = get_bridge_tag(l3_node, qg)
 
     router_path.append((l3_node, '%s VLAN %s' % (bridge, tag)))
 
@@ -85,7 +84,7 @@ def get_router(neutron, network_id):
 
     router_path.append((l3_node, external_port))
   except:
-    logging.warn('No router found')
+    logging.warn('No virtual router found')
     return None, None
 
   return router_path, router_id
