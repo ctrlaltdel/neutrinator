@@ -120,12 +120,14 @@ def find_outgoing_bridge(node, bridge, tag):
   connected to the external world.
   """
 
-  # FIXME: ovs-vsctl iface-to-br qvoXXXXXX -> br-int
-
-  # Warning: HACK ahead
-  bridges = ssh(node, 'ovs-vsctl list-ifaces %s | egrep "^(int|patch)-" | sed "s/^int-//" | sed "s/^patch/br/"' % bridge).split('\n')[0:-1]
+  # FIXME: Is it possible for two different bridges to use same tag?
+  bridges = ssh(node, 'ovs-vsctl list-br').split('\n')[0:-1]
 
   logging.debug('briges connected to the integration bridge: %s' % repr(bridges))
+
+  # FIXME
+  if tag == '[]': # No VLAN tagging
+    return 'TODO', ''
 
   for bridge in bridges:
     flow = ssh(node, 'ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge, tag))
@@ -285,8 +287,6 @@ if __name__ == '__main__':
   if args.debug:
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
-
-  bridge_int = 'br-int'
 
   nova = init_nova()  
   neutron = init_neutron()
