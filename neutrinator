@@ -48,6 +48,14 @@ def fqdn(nova, host):
 
   return fqdn
 
+def get_bridge_tag(node, interface):
+  bridge = ssh(node, 'ovs-vsctl iface-to-br %s' % interface).strip()
+  logging.debug('bridge: %s', bridge)
+  tag = ssh(node, 'ovs-vsctl get port %s tag' % interface).strip()
+  logging.debug('tag: %s', tag)
+
+  return bridge, tag
+
 def get_router(neutron, network_id):
   router_path = []
 
@@ -88,8 +96,6 @@ def get_dhcp_path(neutron, network_id):
   node = neutron.list_dhcp_agent_hosting_networks(network_id)['agents'][0]['host']
   node = fqdn(nova, node)
 
-  path.append((node, 'TODO'))
-
   dhcp_ports = neutron.list_ports(network_id=network_id, device_owner='network:dhcp')['ports']
   logging.debug(dhcp_ports)
 
@@ -102,6 +108,10 @@ def get_dhcp_path(neutron, network_id):
   dhcp_interface = ssh(node, "ip netns exec qdhcp-%s ip link ls | grep tap | awk '{ print $2; }' | cut -d: -f1" % network_id).strip()
 
   path.append((node, dhcp_interface, dhcp_ports[0]['status']))
+
+  bridge, tag = get_bridge_tag(node, dhcp_interface)
+
+  path.append((node, '%s VLAN %s' % (bridge, tag)))
 
   return path
 
@@ -218,10 +228,7 @@ def get_instance_path(nova, neutron, instance_id):
 
   path.append((compute_node, qvo))
 
-  bridge = on_compute('ovs-vsctl port-to-br %s' % qvo).strip()
-  logging.debug('bridge: %s', bridge)
-  tag = on_compute('ovs-vsctl get port %s tag' % qvo).strip()
-  logging.debug('tag: %s', tag)
+  bridge, tag = get_bridge_tag(compute_node, qvo)
 
   path.append((compute_node, '%s VLAN %s' % (bridge, tag)))
 
