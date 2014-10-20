@@ -11,6 +11,11 @@ from novaclient.v1_1 import client as nova_client
 from neutronclient.v2_0 import client as neutron_client
 
 domain = None
+compute_node = None
+
+def on_compute(cmd):
+  global compute_node
+  return ssh(compute_node, cmd)
 
 def pindent(text, indentation=0):
   for line in text.split('\n'):
@@ -72,7 +77,8 @@ def get_router(neutron, network_id):
 
     router_path.append((l3_node, external_port))
   except:
-    pass
+    logging.warn('No router found')
+    return None, None
 
   return router_path, router_id
 
@@ -99,9 +105,32 @@ def get_dhcp_path(neutron, network_id):
 
   return path
 
+def find_outgoing_bridge(bridge, tag):
+  """
+  Try to find out how a given vlan id on the integration bridge is
+  connected to the external world.
+  """
+
+  # FIXME: ovs-vsctl iface-to-br qvoXXXXXX -> br-int
+
+  # Warning: HACK ahead
+  bridges = ssh(compute_node, 'ovs-vsctl list-ifaces %s | egrep "^(int|patch)-" | sed "s/^int-//" | sed "s/^patch/br/"' % bridge).split('\n')[0:-1]
+
+  logging.debug('briges connected to the integration bridge: %s' % repr(bridges))
+
+  for bridge in bridges:
+    flow = ssh(compute_node, 'ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge, tag))
+    logging.debug('flow: %s', repr(flow))
+
+    if flow != '':
+      actions = re.findall('(actions=[^ ]+)', flow)
+      if actions:
+        return bridge, actions[0].strip()
+
+  raise Exception('Outgoing bridge not found, please report a bug')
+
 def get_instance_path(nova, neutron, instance_id):
-  def on_compute(cmd):
-    return ssh(compute_node, cmd)
+  global compute_node
 
   path = []
 
@@ -147,13 +176,6 @@ def get_instance_path(nova, neutron, instance_id):
   if len(neutron.list_dhcp_agent_hosting_networks(network_id)['agents']) != 1:
     raise Exception("This program supports only a single DHCP agent")
 
-  print
-  print '== COMPUTE NODE =='
-  print
-  
-  print 'Compute node: ', compute_node
-  
- 
   logging.debug('Libvirt domain info:')
   logging.debug(on_compute('virsh dominfo %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name')))
   
@@ -203,19 +225,9 @@ def get_instance_path(nova, neutron, instance_id):
 
   path.append((compute_node, '%s VLAN %s' % (bridge, tag)))
 
-  # Find out where the integration bridge is connected to
-  bridges = on_compute('ovs-vsctl list-ifaces %s | egrep "^int-" | sed "s/^int-//"' % bridge_int).split('\n')[0:-1]
+  bridge, actions = find_outgoing_bridge(bridge_int, tag)
 
-  logging.debug('briges connected to the integration bridge: %s' % repr(bridges))
-
-  for bridge in bridges:
-    flow = on_compute('ovs-ofctl dump-flows %s | grep dl_vlan=%s || true' % (bridge, tag))
-    logging.debug('flow: %s', repr(flow))
-
-    if flow != '':
-      actions = re.findall('(actions=[^ ]+)', flow)
-      if actions:
-        path.append((compute_node, '%s %s' % (bridge, actions[0].strip())))
+  path.append((compute_node, '%s %s' % (bridge, actions)))
 
   logging.debug('KVM process:')
   logging.debug(on_compute('ps ax | grep [%s]%s' % (instance_id[0], instance_id[1:])))
@@ -239,9 +251,34 @@ def init_neutron():
     tenant_name=os.environ['OS_TENANT_NAME'],
     auth_url=os.environ['OS_AUTH_URL'])
 
+class Instance():
+  ''' This class is a wrapper around novaclient's Server class '''
+  __instance = None
+
+  def __init__(self, id):
+    self.__instance = nova.servers.get(id)
+    self.__ports = neutron.list_ports(device_id=id)['ports']
+
+    self.id = id
+    self.name = self.__instance.name
+    self.compute_node = getattr(self.__instance, 'OS-EXT-SRV-ATTR:hypervisor_hostname')
+
+  def list_interfaces(self):
+    return map(lambda p: p['id'], self.__ports)
+
+  def get_interfaces_ips(self, interface):
+    port = filter(lambda p: p['id'] == interface, self.__ports)[0]
+    logging.debug(port)
+    return [i['ip_address'] for i in port['fixed_ips']]
+
+class Interface():
+  pass
 
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser(description='Neutrinator is a tool which helps you seeing through the virtual network maze')
+  parser = argparse.ArgumentParser(description='''Neutrinator is a tool
+  which helps operators to see through the OpenStack Neutron virtual
+  network maze''')
+  
   parser.add_argument('--debug', '-d', action='store_true')
 
   parser.add_argument('instance_id')
@@ -255,26 +292,39 @@ if __name__ == '__main__':
 
   nova = init_nova()  
   neutron = init_neutron()
-   
-  network_id, instance_path = get_instance_path(nova, neutron, args.instance_id)
 
+  instance = Instance(args.instance_id)
+  network_id, compute_path = get_instance_path(nova, neutron, args.instance_id)
   dhcp_path = get_dhcp_path(neutron, network_id)
-
   router_path, router_id = get_router(neutron, network_id)
 
   print
-  print '== NETWORK PATH =='
+  print '== INSTANCE DETAILS =='
   print
+
+  print 'Id: ', instance.id
+  print 'Name: ', instance.name
+  print 'Compute node: ', instance.compute_node
+  print 'Interfaces: '
+  for interface in instance.list_interfaces():
+    pindent(interface + ' ' + ' '.join(instance.get_interfaces_ips(interface)), 2)
   
-  print 'INSTANCE:'
-# http://openstack.redhat.com/Networking_in_too_much_detail
-  pindent('\n'.join(('\t'.join(a) for a in instance_path)), 2)
-  print
 
-  print 'DHCP:'
-  pindent('\n'.join(('\t'.join(a) for a in dhcp_path)), 2)
-  print
-
-  print 'L3 ROUTER (%s):' % router_id
-  pindent('\n'.join(('\t'.join(a) for a in router_path)), 2)
-  print
+  for interface in instance.list_interfaces():
+    print
+    print '== L2 PATH (%s) ==' % interface
+    print
+  
+    print 'COMPUTE:'
+  # http://openstack.redhat.com/Networking_in_too_much_detail
+    pindent('\n'.join(('\t'.join(a) for a in compute_path)), 2)
+    print
+  
+    print 'DHCP:'
+    pindent('\n'.join(('\t'.join(a) for a in dhcp_path)), 2)
+    print
+  
+    if router_id:
+      print 'L3 ROUTER (%s):' % router_id
+      pindent('\n'.join(('\t'.join(a) for a in router_path)), 2)
+      print
