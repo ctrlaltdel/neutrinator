@@ -331,9 +331,9 @@ if __name__ == '__main__':
   print '== INSTANCE DETAILS =='
   print
 
-  print 'Id: ', instance.id
-  print 'Name: ', instance.name
-  print 'Compute node: ', instance.compute_node
+  print 'Instance ID:   ', instance.id
+  print 'Instance Name: ', instance.name
+  print 'Compute node:  ', instance.compute_node
   print 'Interfaces: '
   for interface in instance.list_interfaces():
     pindent(interface + ' ' + ' '.join(instance.get_interfaces_ips(interface)), 2)
