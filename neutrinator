@@ -262,6 +262,7 @@ class Instance():
     self.id = id
     self.name = self.__instance.name
     self.compute_node = getattr(self.__instance, 'OS-EXT-SRV-ATTR:hypervisor_hostname')
+    self.tenant_id = self.__instance.tenant_id
 
   def list_interfaces(self):
     return map(lambda p: p['id'], self.__ports)
@@ -271,8 +272,38 @@ class Instance():
     logging.debug(port)
     return [i['ip_address'] for i in port['fixed_ips']]
 
+  def get_firewall(self):
+    return Firewall(self.tenant_id)
+
 class Interface():
   pass
+
+class Firewall():
+  def __init__(self, tenant_id):
+    self.tenant_id = tenant_id
+    firewalls = neutron.list_firewalls(tenant_id=tenant_id)
+
+    if len(firewalls) == 0:
+      return None
+    elif len(firewalls) == 1:
+      firewall = firewalls['firewalls'][0]
+      self.id = firewall['id']
+    else:
+      raise Exception('Multiple firewalls found, this is weird')
+
+  def get_rules(self):
+    rules = []
+
+    for policy in neutron.list_firewall_policies(firewall_id=self.id)['firewall_policies']:
+      for rule in neutron.list_firewall_rules(firewall_policy_id=policy['id'])['firewall_rules']:
+        rules.append((
+          str(rule[item]) for item in
+            ('name', 'protocol', 'source_ip_address', 'source_port',
+            'destination_ip_address', 'destination_port', 'action',
+            'enabled')
+        ))
+
+    return rules
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='''Neutrinator is a tool
@@ -323,6 +354,17 @@ if __name__ == '__main__':
     print
   
     if router_id:
-      print 'L3 ROUTER (%s):' % router_id
+      print 'L3 ROUTER:'
+      print
+      pindent('Router ID: %s' % router_id, 2)
+      print
       pindent('\n'.join(('\t'.join(a) for a in router_path)), 2)
       print
+
+  firewall = instance.get_firewall()
+  if firewall:
+    print '== FWaaS =='
+    print
+    pindent('Firewall ID: %s' % firewall.id, 2)
+    print
+    pindent('\n'.join(('\t'.join(a) for a in firewall.get_rules())), 2)
