@@ -368,7 +368,6 @@ if __name__ == '__main__':
       print
 
   firewall = instance.get_firewall()
-  print firewall
   if firewall.id:
     print '== FWaaS =='
     print
