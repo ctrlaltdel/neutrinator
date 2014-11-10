@@ -281,13 +281,19 @@ class Interface():
 class Firewall():
   def __init__(self, tenant_id):
     self.tenant_id = tenant_id
-    firewalls = neutron.list_firewalls(tenant_id=tenant_id)
+
+    try:
+      firewalls = neutron.list_firewalls(tenant_id=tenant_id)['firewalls']
+      logging.debug('Firewalls: %s' % firewalls)
+    except KeyError:
+      self.id = None
 
     if len(firewalls) == 0:
-      return None
+      self.id = None
+      logging.debug('No firewall found')
     elif len(firewalls) == 1:
-      firewall = firewalls['firewalls'][0]
-      self.id = firewall['id']
+      self.id = firewall[0]['id']
+      logging.debug('One firewall found: %s' % self.id)
     else:
       raise Exception('Multiple firewalls found, this is weird')
 
@@ -362,7 +368,8 @@ if __name__ == '__main__':
       print
 
   firewall = instance.get_firewall()
-  if firewall:
+  print firewall
+  if firewall.id:
     print '== FWaaS =='
     print
     pindent('Firewall ID: %s' % firewall.id, 2)
