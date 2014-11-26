@@ -292,7 +292,7 @@ class Firewall():
       self.id = None
       logging.debug('No firewall found')
     elif len(firewalls) == 1:
-      self.id = firewall[0]['id']
+      self.id = firewalls[0]['id']
       logging.debug('One firewall found: %s' % self.id)
     else:
       raise Exception('Multiple firewalls found, this is weird')
