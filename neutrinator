@@ -236,20 +236,28 @@ def get_instance_path(nova, neutron, instance_id):
 
   return network_id, path
 
-def init_nova():
-  return nova_client.Client(
-    os.environ['OS_USERNAME'],
-    os.environ['OS_PASSWORD'],
-    os.environ['OS_TENANT_NAME'],
-    os.environ['OS_AUTH_URL'],
-    service_type="compute")
+def get_keystone_session():
+  from os import environ as env
+  from keystoneclient.auth.identity import v2
+  from keystoneclient import session
 
-def init_neutron():
-  return neutron_client.Client(
-    username=os.environ['OS_USERNAME'],
-    password=os.environ['OS_PASSWORD'],
-    tenant_name=os.environ['OS_TENANT_NAME'],
-    auth_url=os.environ['OS_AUTH_URL'])
+  auth = v2.Password(
+    auth_url=env['OS_AUTH_URL'],
+    username=env['OS_USERNAME'],
+    password=env['OS_PASSWORD'],
+    tenant_name=env['OS_TENANT_NAME'])
+  sess = session.Session(auth=auth)
+  return sess
+
+def get_nova():
+  sess = get_keystone_session()
+  nova = nova_client.Client('2', session=sess)
+  return nova
+
+def get_neutron():
+  sess = get_keystone_session()
+  neutron = neutron_client.Client(session=sess)
+  return neutron
 
 class Instance():
   ''' This class is a wrapper around novaclient's Server class '''
@@ -325,8 +333,8 @@ if __name__ == '__main__':
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
 
-  nova = init_nova()  
-  neutron = init_neutron()
+  nova = get_nova()
+  neutron = get_neutron()
 
   instance = Instance(args.instance_id)
   network_id, compute_path = get_instance_path(nova, neutron, args.instance_id)
