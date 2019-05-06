@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import os
 import sys
@@ -6,9 +6,8 @@ import re
 import argparse
 import logging
 from pprint import pprint, pformat
-from subprocess import check_output
-from novaclient import client as nova_client
-from neutronclient.v2_0 import client as neutron_client
+from subprocess import check_output, DEVNULL
+import openstack
 
 domain = None
 compute_node = None
@@ -19,18 +18,18 @@ def on_compute(cmd):
 
 def pindent(text, indentation=0):
   for line in text.split('\n'):
-    print ' ' * indentation + line
+    print(' ' * indentation + line)
 
 def tcpdump_dhcp(host, interface, mac):
   mac_filter = '0x' + mac[6:].replace(':', '')
   cmd = 'tcpdump -c 1 -i %s -vvv -s 1500 "((port 67 or port 68) and (udp[38:4] = %s))"' % (interface, mac_filter)
   logging.debug(cmd)
   #cmd = 'tcpdump -c 1 -i %s -vvv -s 1500 "(port 67 or port 68)"' % (interface)
-  return check_output(['ssh', 'root@%s' % host, cmd])
+  return check_output(['ssh', '%s' % host, cmd])
 
 def ssh(host, cmd):
   logging.debug('ssh(%s, %s)' % (host, cmd))
-  result = check_output(['ssh', 'root@%s' % host, cmd])
+  result = check_output(['ssh', '%s' % host, cmd], stderr=DEVNULL).decode('utf-8')
   logging.debug(result)
   return result
 
@@ -56,6 +55,18 @@ def get_bridge_tag(node, interface):
 
   return bridge, tag
 
+def get_neutron_path(node, interface):
+  assert interface != ''
+
+  neutron_config = ssh(node, "ls /etc/neutron/plugins/ml2/linuxbridge_agent.ini /etc/neutron/plugins/ml2/openvswitch_agent.ini 2> /dev/null || true").strip()
+
+  if neutron_config.endswith('linuxbridge_agent.ini'):
+    return get_linuxbridge_path(node, interface)
+  elif neutron_config.endswith('openvswitch_agent.ini'):
+    return get_ovs_path(node, interface)
+  else:
+    raise Exception("Cannot detect neutron configuration on {}: {}".format(node, neutron_config))
+
 def get_ovs_path(node, interface):
   path = []
 
@@ -63,54 +74,98 @@ def get_ovs_path(node, interface):
   path.append((node, '%s VLAN %s' % (bridge, tag)))
 
   bridge, actions = find_outgoing_bridge(node, bridge, tag)
-  path.append((node, '%s %s' % (bridge, actions)))
+
+  if bridge:
+    path.append((node, '%s %s' % (bridge, actions)))
+  else:
+    path.append((node, "Error: Failed to find outgoing bridge"))
 
   return path
 
-def get_router(neutron, network_id):
-  router_path = []
-
-  try:
-    router_port = neutron.list_ports(network_id=network_id, device_owner='network:router_interface')['ports'][0]
-  except:
-    logging.warn('No virtual router found')
-    return None, None
-
-  logging.debug(router_port)
-
-  router_id = router_port['device_id']
-
-  l3_node = neutron.list_l3_agent_hosting_routers(router_id)['agents'][0]['host']
-  l3_node = fqdn(nova, l3_node)
-
-  qr = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qr-%s | awk '{ print $2; }' | cut -d: -f1" % (router_id, router_port['id'][:11])).strip()
-  qg = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qg | awk '{ print $2; }' | cut -d: -f1" % router_id).strip()
-
-  router_path += reversed(get_ovs_path(l3_node, qr))
-  router_path.append((l3_node, qr, router_port['status']))
-  router_path.append((l3_node, qg, router_port['status']))
-  router_path += get_ovs_path(l3_node, qg)
-
-  return router_path, router_id
-
-def get_dhcp_path(neutron, network_id):
-  node = neutron.list_dhcp_agent_hosting_networks(network_id)['agents'][0]['host']
-  node = fqdn(nova, node)
-
-  dhcp_ports = neutron.list_ports(network_id=network_id, device_owner='network:dhcp')['ports']
-  logging.debug(dhcp_ports)
-
-  if len(dhcp_ports) != 1:
-    raise Exception('no support for multiple DHCP servers')
-
-  logging.debug('Routing table:')
-  logging.debug((ssh(node, 'ip netns exec qdhcp-%s ip ro ls' % (network_id)), 2))
-
-  dhcp_interface = ssh(node, "ip netns exec qdhcp-%s ip link ls | grep tap | awk '{ print $2; }' | cut -d: -f1" % network_id).strip()
-
+def get_linuxbridge_path(node, interface):
   path = []
-  path += reversed(get_ovs_path(node, dhcp_interface))
-  path.append((node, dhcp_interface, dhcp_ports[0]['status']))
+
+  bridge = ssh(node, "brctl show | grep {} | cut -f1".format(interface)).strip()
+
+  if bridge == '':
+    return [(node, "Unable to find bridge for {}".format(interface))]
+
+  path.append((node, bridge))
+
+  vxlan = ssh(node, "brctl show {} | grep vxlan | sed 's/\t//g'".format(bridge)).strip()
+
+  if vxlan == '':
+    return [(node, "Unable to find vxlan for bridge {}".format(bridge))]
+
+  path.append((node, vxlan))
+
+  return path
+
+
+def get_routers(network_id):
+  routers = []
+
+  for router_id in [p.device_id for p in cloud.network.ports(network_id=network_id) if 'router' in p.device_owner]:
+
+    for agent in cloud.network.routers_hosting_l3_agents(router_id):
+
+  for port in list(cloud.network.ports(network_id=network_id, device_owner='network:router_interface')) + list(cloud.network.ports(network_id=network_id, device_owner='network:ha_router_replicated_interface')):
+    logging.debug("Router port: {}".format(port))
+
+    logging.debug(port)
+
+    router_id = port['device_id']
+
+    l3_node = port.binding_host_id
+
+    qr = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qr-%s | awk '{ print $2; }' | cut -d: -f1" % (router_id, port['id'][:11])).strip()
+    qg = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qg | awk '{ print $2; }' | cut -d: -f1" % router_id).strip()
+
+    router_path = []
+
+    if not qr or not qg:
+      router_path.append((l3_node, "EXCEPTION"))
+    else:
+      router_path.append(('neutron port', port['id'], 'status: {}'.format(port['status'])))
+      router_path += reversed(get_neutron_path(l3_node, qr))
+      router_path.append((l3_node, qr))
+      router_path.append((l3_node, qg))
+      router_path += get_neutron_path(l3_node, qg)
+
+    routers.append((router_path, router_id))
+
+  return routers
+
+def get_dhcp_path(network_id):
+  path = []
+
+  for port in cloud.network.ports(network_id='561c5f67-e649-4b09-ae78-8e56a2dac42d', device_owner='network:dhcp'):
+    logging.debug("DHCP port: {}".format(port))
+    node = port.binding_host_id
+
+    logging.debug('Routing table:')
+    logging.debug((ssh(node, 'ip netns exec qdhcp-%s ip ro ls' % (network_id)), 2))
+
+    dhcp_interface = ssh(node, "ip netns exec qdhcp-%s ip route list | awk '/default/ { print $5;}'" % network_id).strip()
+
+    if dhcp_interface == '':
+      path.append((node, 'DHCP interface not found'))
+    else:
+      path.append(('neutron port', port['id'], 'Status: {}'.format(port['status'])))
+      if dhcp_interface.startswith('ns-'):
+        path.append((node, dhcp_interface))
+        peer_if_index = ssh (node, "ip netns exec qdhcp-%s ethtool -S %s | awk '/peer_ifindex:/ { print $2; }'" % (network_id, dhcp_interface)).strip()
+        path.append((node, "veth link (peer_ifindex: {})".format(peer_if_index)))
+        dhcp_host_interface = ssh(node, "ip link list | egrep '^{}: ' | egrep -o tap[a-f0-9-]+".format(peer_if_index)).strip()
+        path.append((node, dhcp_host_interface))
+        path += get_neutron_path(node, dhcp_host_interface)
+      elif dhcp_interface.startswith('tap'):
+        path.append((node, dhcp_interface))
+        path += get_neutron_path(node, dhcp_interface)
+      else:
+        path.append((node, "Unknown interface {}".format(dhcp_interface)))
+
+    path.append(('', ''))
 
   return path
 
@@ -138,16 +193,16 @@ def find_outgoing_bridge(node, bridge, tag):
       if actions:
         return bridge, actions[0].strip()
 
-  raise Exception('Outgoing bridge not found, please report a bug')
+  return None, None
 
-def get_instance_path(nova, neutron, instance_id):
+def get_instance_path(instance_id):
   global compute_node
 
   path = []
 
-  instance = nova.servers.get(instance_id)
+  instance = cloud.compute.get_server(instance_id)
   
-  compute_node = getattr(instance, 'OS-EXT-SRV-ATTR:hypervisor_hostname')
+  compute_node = instance.hypervisor_hostname
 
   global domain
   domain = '.'.join(compute_node.split('.')[1:])
@@ -157,12 +212,17 @@ def get_instance_path(nova, neutron, instance_id):
   logging.debug('Instance ID: %s, Name: %s' % (instance.id, instance.name))
   
   logging.debug('Console log')
-  for line in nova.servers.get_console_output(instance_id).split('\n'):
+
+  console_output = cloud.compute.get_server_console_output(instance_id)
+
+  for line in console_output:
     if line.startswith('ci-info:'):
       logging.debug(line)
-  
-  ports = neutron.list_ports(device_id=instance_id)['ports']
 
+  ports = [port for port in cloud.network.ports(device_id=instance_id)]
+
+  if len(ports) < 1:
+    raise Exception("No port found for instance {}".format(instance_id))
   if len(ports) > 1:
     raise Exception("This program doesn't currently supports multiple interfaces connected to a single VM")
   
@@ -173,25 +233,34 @@ def get_instance_path(nova, neutron, instance_id):
   if len(port['fixed_ips']) > 1:
     raise Exception("This program doesn't currently support multiple IP addresses per interface")
 
+  path.append((
+    'neutron port',
+    port['id'],
+    'Status: {}, MAC: {}'.format(port['status'], port['mac_address']),
+  ))
+
+
   fixed_ip = port['fixed_ips'][0]
   logging.debug('IP: ' + fixed_ip['ip_address'])
   
-  subnet = fixed_ip['subnet_id']
-  logging.debug('Subnet: ' + subnet)
+  subnet = cloud.network.get_subnet(fixed_ip['subnet_id'])
+  logging.debug(subnet)
   
-  for line in pformat(neutron.show_subnet(subnet)).split('\n'):
+  for line in pformat(subnet).split('\n'):
     logging.debug(line)
 
-  network_id = neutron.show_subnet(subnet)['subnet']['network_id']
+  network_id = subnet.network_id
 
-  if len(neutron.list_dhcp_agent_hosting_networks(network_id)['agents']) != 1:
-    raise Exception("This program supports only a single DHCP agent")
+  # dhcp_agents = cloud.network.network_hosting_dhcp_agents(network_id)
+
+  # if len(dhcp_agents) != 1:
+  #   raise Exception("This program supports only a single DHCP agent")
 
   logging.debug('Libvirt domain info:')
-  logging.debug(on_compute('virsh dominfo %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name')))
+  logging.debug(on_compute('virsh dominfo %s' % instance.instance_name))
   
   logging.debug('Libvirt domain interfaces list:')
-  domiflist = on_compute('virsh domiflist %s' % getattr(instance, 'OS-EXT-SRV-ATTR:instance_name'))
+  domiflist = on_compute('virsh domiflist %s' % instance.instance_name)
   logging.debug(domiflist)
   
   libvirt_interfaces = domiflist.split('\n')[2:-2]
@@ -202,11 +271,7 @@ def get_instance_path(nova, neutron, instance_id):
   intf = libvirt_interfaces[0]
   (interface, type, source, model, mac) = re.split('\s+', intf)
 
-  path.append((
-    compute_node,
-    interface,
-    'STATUS: %s, MAC: %s' % (port['status'], port['mac_address'])
-  ))
+  path.append((compute_node, interface))
   
   #print 'tcpdump on %s' % interface
   #print on_compute('tcpdump -c 5 -ni %s' % interface)
@@ -227,7 +292,7 @@ def get_instance_path(nova, neutron, instance_id):
   qvo = qvb.replace('qvb', 'qvo')
   logging.debug('qvo: %s', qvo)
 
-  path += get_ovs_path(compute_node, qvo)
+  path += get_neutron_path(compute_node, qvo)
 
   logging.debug('KVM process:')
   logging.debug(on_compute('ps ax | grep [%s]%s' % (instance_id[0], instance_id[1:])))
@@ -236,47 +301,24 @@ def get_instance_path(nova, neutron, instance_id):
 
   return network_id, path
 
-def get_keystone_session():
-  from os import environ as env
-  from keystoneclient.auth.identity import v2
-  from keystoneclient import session
-
-  auth = v2.Password(
-    auth_url=env['OS_AUTH_URL'],
-    username=env['OS_USERNAME'],
-    password=env['OS_PASSWORD'],
-    tenant_name=env['OS_TENANT_NAME'])
-  sess = session.Session(auth=auth)
-  return sess
-
-def get_nova():
-  sess = get_keystone_session()
-  nova = nova_client.Client('2', session=sess)
-  return nova
-
-def get_neutron():
-  sess = get_keystone_session()
-  neutron = neutron_client.Client(session=sess)
-  return neutron
-
 class Instance():
   ''' This class is a wrapper around novaclient's Server class '''
   __instance = None
 
   def __init__(self, id):
-    self.__instance = nova.servers.get(id)
-    self.__ports = neutron.list_ports(device_id=id)['ports']
+    self.__instance = cloud.compute.get_server(id)
+    self.__ports = [port for port in cloud.network.ports(device_id=id)]
 
     self.id = id
     self.name = self.__instance.name
-    self.compute_node = getattr(self.__instance, 'OS-EXT-SRV-ATTR:hypervisor_hostname')
-    self.tenant_id = self.__instance.tenant_id
+    self.compute_node = self.__instance.hypervisor_hostname
+    self.tenant_id = self.__instance.project_id
 
   def list_interfaces(self):
     return map(lambda p: p['id'], self.__ports)
 
   def get_interfaces_ips(self, interface):
-    port = filter(lambda p: p['id'] == interface, self.__ports)[0]
+    port = list(filter(lambda p: p['id'] == interface, self.__ports))[0]
     logging.debug(port)
     return [i['ip_address'] for i in port['fixed_ips']]
 
@@ -286,39 +328,6 @@ class Instance():
 class Interface():
   pass
 
-class Firewall():
-  def __init__(self, tenant_id):
-    self.tenant_id = tenant_id
-
-    try:
-      firewalls = neutron.list_firewalls(tenant_id=tenant_id)['firewalls']
-      logging.debug('Firewalls: %s' % firewalls)
-    except KeyError:
-      self.id = None
-
-    if len(firewalls) == 0:
-      self.id = None
-      logging.debug('No firewall found')
-    elif len(firewalls) == 1:
-      self.id = firewalls[0]['id']
-      logging.debug('One firewall found: %s' % self.id)
-    else:
-      raise Exception('Multiple firewalls found, this is weird')
-
-  def get_rules(self):
-    rules = []
-
-    for policy in neutron.list_firewall_policies(firewall_id=self.id)['firewall_policies']:
-      for rule in neutron.list_firewall_rules(firewall_policy_id=policy['id'])['firewall_rules']:
-        rules.append((
-          str(rule[item]) for item in
-            ('name', 'protocol', 'source_ip_address', 'source_port',
-            'destination_ip_address', 'destination_port', 'action',
-            'enabled')
-        ))
-
-    return rules
-
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='''Neutrinator is a tool
   which helps operators to see through the OpenStack Neutron virtual
@@ -327,58 +336,58 @@ if __name__ == '__main__':
   parser.add_argument('--debug', '-d', action='store_true')
 
   parser.add_argument('instance_id')
+
+  # config = openstack.config.OpenStackConfig()
+  # config.register_argparse_arguments(parser, sys.argv)
+
   args = parser.parse_args()
 
   if args.debug:
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
+    openstack.enable_logging(debug=True)
 
-  nova = get_nova()
-  neutron = get_neutron()
+  # print(config.get_one(argparse=args))
+  # cloud = openstack.connect(cloud_config=config.get_one(argparse=args))
+
+  cloud = openstack.connect(cloud='lab')
 
   instance = Instance(args.instance_id)
-  network_id, compute_path = get_instance_path(nova, neutron, args.instance_id)
-  dhcp_path = get_dhcp_path(neutron, network_id)
-  router_path, router_id = get_router(neutron, network_id)
+  network_id, compute_path = get_instance_path(args.instance_id)
+  dhcp_path = get_dhcp_path(network_id)
+  routers = get_routers(network_id)
 
-  print
-  print '== INSTANCE DETAILS =='
-  print
+  print()
+  print('== INSTANCE DETAILS ==')
+  print()
 
-  print 'Instance ID:   ', instance.id
-  print 'Instance Name: ', instance.name
-  print 'Compute node:  ', instance.compute_node
-  print 'Interfaces: '
+  print('Instance ID:   ', instance.id)
+  print('Instance Name: ', instance.name)
+  print('Compute node:  ', instance.compute_node)
+  print('Interfaces: ')
   for interface in instance.list_interfaces():
-    pindent(interface + ' ' + ' '.join(instance.get_interfaces_ips(interface)), 2)
+    pindent('- ' + interface + ' ' + ' '.join(instance.get_interfaces_ips(interface)), 2)
   
 
   for interface in instance.list_interfaces():
-    print
-    print '== L2 PATH (%s) ==' % interface
-    print
+    print()
+    print('== L2 PATH (%s) ==' % interface)
+    print()
   
-    print 'COMPUTE:'
+    print('COMPUTE:')
   # http://openstack.redhat.com/Networking_in_too_much_detail
     pindent('\n'.join(('\t'.join(a) for a in compute_path)), 2)
-    print
+    print()
   
-    print 'DHCP:'
+    print('DHCP:')
     pindent('\n'.join(('\t'.join(a) for a in dhcp_path)), 2)
-    print
+    print()
   
-    if router_id:
-      print 'L3 ROUTER:'
-      print
-      pindent('Router ID: %s' % router_id, 2)
-      print
-      pindent('\n'.join(('\t'.join(a) for a in router_path)), 2)
-      print
-
-  firewall = instance.get_firewall()
-  if firewall.id:
-    print '== FWaaS =='
-    print
-    pindent('Firewall ID: %s' % firewall.id, 2)
-    print
-    pindent('\n'.join(('\t'.join(a) for a in firewall.get_rules())), 2)
+    if routers:
+      print('ROUTERS:')
+      print()
+      for router_path, router_id in routers:
+        pindent('Router ID: %s' % router_id, 2)
+        print()
+        pindent('\n'.join(('\t'.join(a) for a in router_path)), 2)
+        print()
