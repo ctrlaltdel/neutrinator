@@ -121,8 +121,10 @@ def get_routers(network_id):
 
         router_path = []
 
-        if not qr or not qg:
-          router_path.append((l3_node, "EXCEPTION"))
+        if not qr:
+          router_path.append((l3_node, "EXCEPTION: qr device is missing"))
+        elif not qg:
+          router_path.append((l3_node, "EXCEPTION: qg device is missing"))
         else:
           router_path.append(('neutron port', port['id'], 'status: {}'.format(port['status'])))
           router_path += reversed(get_neutron_path(l3_node, qr))
