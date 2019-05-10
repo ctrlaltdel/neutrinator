@@ -108,30 +108,29 @@ def get_routers(network_id):
   for router_id in [p.device_id for p in cloud.network.ports(network_id=network_id) if 'router' in p.device_owner]:
     for agent in cloud.network.routers_hosting_l3_agents(router_id):
       for port in list(cloud.network.ports(network_id=network_id, device_owner='network:router_interface')) + list(cloud.network.ports(network_id=network_id, device_owner='network:ha_router_replicated_interface')):
-      logging.debug("Router port: {}".format(port))
+        logging.debug("Router port: {}".format(port))
 
-      logging.debug(port)
+        logging.debug(port)
 
-      router_id = port['device_id']
+        router_id = port['device_id']
 
-      l3_node = port.binding_host_id
+        l3_node = port.binding_host_id
 
-      qr = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qr-%s | awk '{ print $2; }' | cut -d: -f1" % (router_id, port['id'][:11])).strip()
-      qg = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qg | awk '{ print $2; }' | cut -d: -f1" % router_id).strip()
+        qr = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qr-%s | awk '{ print $2; }' | cut -d: -f1" % (router_id, port['id'][:11])).strip()
+        qg = ssh(l3_node, "ip netns exec qrouter-%s ip link ls | grep qg | awk '{ print $2; }' | cut -d: -f1" % router_id).strip()
 
-      router_path = []
+        router_path = []
 
-      if not qr or not qg:
-        router_path.append((l3_node, "EXCEPTION"))
-      else:
-        router_path.append(('neutron port', port['id'], 'status: {}'.format(port['status'])))
-        router_path += reversed(get_neutron_path(l3_node, qr))
-        router_path.append((l3_node, qr))
-        router_path.append((l3_node, qg))
-        router_path += get_neutron_path(l3_node, qg)
+        if not qr or not qg:
+          router_path.append((l3_node, "EXCEPTION"))
+        else:
+          router_path.append(('neutron port', port['id'], 'status: {}'.format(port['status'])))
+          router_path += reversed(get_neutron_path(l3_node, qr))
+          router_path.append((l3_node, qr))
+          router_path.append((l3_node, qg))
+          router_path += get_neutron_path(l3_node, qg)
 
-      routers.append((router_path, router_id))
-
+        routers.append((router_path, router_id))
   return routers
 
 def get_dhcp_path(network_id):
