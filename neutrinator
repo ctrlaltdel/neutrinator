@@ -522,11 +522,12 @@ class Interface():
         self.type = type
         self.host = host
         self.name = name
+        self.details = ''
 
         assert (name != '')
 
     def __repr__(self):
-        return "{} {}".format(self.type, self.name)
+        return "{:10} {} {}".format(self.type, self.name, self.details)
 
 
 class Tap(Interface):
@@ -534,11 +535,8 @@ class Tap(Interface):
         super().__init__(host, name, 'Tap')
         self.ns = ns
 
-    def __repr__(self):
         if self.ns:
-            return "{} {} ({})".format(self.type, self.name, self.ns)
-        else:
-            return "{} {}".format(self.type, self.name)
+            self.details = "({})".format(self.ns)
 
 
 class Bridge(Interface):
@@ -562,14 +560,11 @@ class Bridge(Interface):
 
 class OVSBridge(Interface):
     def __init__(self, host, name, actions):
-        self.actions = self.parse_actions(actions)
         super().__init__(host, name, 'OVSBridge')
+        self.details = self.parse_actions(actions)
 
     def parse_actions(self, actions):
         return actions.split(',')
-
-    def __repr__(self):
-        return "OVSBridge {} {}".format(self.name, self.actions)
 
 
 class OVSInterface(Interface):
@@ -577,16 +572,13 @@ class OVSInterface(Interface):
         super().__init__(host, ofport, 'OVSInterface')
         self.ofport = ofport
         self.interface = self.get_interface()
+        self.details = "{interface[name]} {interface[options]}".format(interface=self.interface)
 
     def get_interface(self):
         intf = json.loads(
             ssh(self.host, "ovs-vsctl -f json find Interface ofport={}".format(
                 self.ofport)))
         return dict(zip(intf['headings'], intf['data'][0]))
-
-    def __repr__(self):
-        return "OVSInterface {interface[name]} {interface[options]}".format(
-            interface=self.interface)
 
 
 class Veth:
