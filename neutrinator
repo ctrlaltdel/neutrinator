@@ -641,8 +641,7 @@ if __name__ == '__main__':
 
     parser.add_argument('instance_id')
 
-    # config = openstack.config.OpenStackConfig()
-    # config.register_argparse_arguments(parser, sys.argv)
+    cloud = openstack.connect(options=parser)
 
     args = parser.parse_args()
 
@@ -650,11 +649,6 @@ if __name__ == '__main__':
         logger = logging.getLogger()
         logger.setLevel(logging.DEBUG)
         openstack.enable_logging(debug=True)
-
-    # print(config.get_one(argparse=args))
-    # cloud = openstack.connect(cloud_config=config.get_one(argparse=args))
-
-    cloud = openstack.connect(cloud='lab')
 
     instance = Instance(args.instance_id)
 
