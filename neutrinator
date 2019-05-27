@@ -136,6 +136,9 @@ def get_routers(network_id):
     #   )
 
     for port in cloud.network.ports(network_id=network_id):
+        if port.device_owner == 'network:router_gateway':
+            continue
+
         if 'router' not in port.device_owner:
             continue
 
@@ -341,9 +344,7 @@ class Port():
                 elif interface.startswith('vxlan-'):
                     path += get_neutron_path(host, interface)
                 else:
-                    path.append(
-                        Error(host, "Unknown interface {} in {}".format(
-                            interface, qbr.name)))
+                    path.append(Interface(host, interface))
 
         else:
             raise Exception(
