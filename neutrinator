@@ -514,7 +514,7 @@ class FloatingIP():
         self.fip = fip
 
     def __repr__(self):
-        return "Floating IP {}".format(self.fip.floating_ip_address)
+        return "Floating IP   {}".format(self.fip.floating_ip_address)
 
 
 class Interface():
