@@ -572,7 +572,8 @@ class OVSInterface(Interface):
         super().__init__(host, ofport, 'OVSInterface')
         self.ofport = ofport
         self.interface = self.get_interface()
-        self.details = "{interface[name]} {interface[options]}".format(interface=self.interface)
+        self.details = "{interface[name]} {interface[options]}".format(
+            interface=self.interface)
 
     def get_interface(self):
         intf = json.loads(
@@ -624,8 +625,8 @@ class Error:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='''Neutrinator is a tool
-  which helps operators to see through the OpenStack Neutron virtual
+    parser = argparse.ArgumentParser(
+        description='''Neutrinator helps operators to see through the OpenStack Neutron virtual
   network maze''')
 
     parser.add_argument('--debug', '-d', action='store_true')
