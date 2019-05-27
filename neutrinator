@@ -581,10 +581,9 @@ class OVSInterface(Interface):
         return dict(zip(intf['headings'], intf['data'][0]))
 
 
-class Veth:
+class Veth(Interface):
     def __init__(self, host, name, ns=None):
-        self.host = host
-        self.name = name
+        super().__init__(host, name, 'Veth')
         self.ns = ns
         self.peer = self.get_peer()
         if ns:
