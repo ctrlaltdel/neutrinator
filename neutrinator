@@ -8,8 +8,13 @@ import logging
 import json
 from pprint import pprint, pformat
 from subprocess import check_output, DEVNULL
-import openstack
 from functools import lru_cache
+
+parent_dir = os.path.abspath(os.path.dirname(__file__))
+vendor_dir = os.path.join(parent_dir, 'vendor')
+sys.path.insert(0, vendor_dir)
+
+import openstack
 
 domain = None
 compute_node = None
