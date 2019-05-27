@@ -1,13 +1,19 @@
 # Neutrinator
 
+Did you ever had to manually trace traffic to or from an OpenStack instance?
+
 This tool is hopefully useful for operators which already had to deep
 dive into neutron complexity to figure out why an instance network
 connectivity was broken.
 
+Given the uuid of an instance running on OpenStack, it will show you all the
+details on how the network plumbing is being setup by Neutron.
+
 # Pre-requisites
 
 1. Admin access to OpenStack APIs (environment variables or CLI arguments)
-2. SSH configuration for password-less login on controllers and compute nodes using the same hostname than returned by OpenStack APIs
+2. SSH configuration for password-less login on controllers and compute nodes
+   using the same hostname than returned by OpenStack APIs
 
 # Example usage
 
