@@ -587,6 +587,8 @@ class Veth:
         self.name = name
         self.ns = ns
         self.peer = self.get_peer()
+        if ns:
+            self.details = "({})".format(self.ns)
 
     def get_peer(self):
         if self.ns:
@@ -604,21 +606,13 @@ class Veth:
             "basename $(dirname $(egrep -l ^{}$ /sys/class/net/*/ifindex))".
             format(iflink)).strip()
 
-    def __repr__(self):
-        if self.ns:
-            return "Veth {} ({})".format(self.name, self.ns)
-        else:
-            return "Veth {}".format(self.name)
-
 
 class Vxlan(Interface):
     def __init__(self, host, name):
         super().__init__(host, name, 'Vxlan')
         self.config = ssh(
             host, "ip -d link show {} | grep 'vxlan id'".format(name)).strip()
-
-    def __repr__(self):
-        return "Vxlan {self.name} ({self.config})".format(self=self)
+        self.details = "({self.config})".format(self=self)
 
 
 class Error:
