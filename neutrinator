@@ -34,8 +34,12 @@ def tcpdump_dhcp(host, interface, mac):
     return check_output(['ssh', '%s' % host, cmd])
 
 
-def ssh(host, cmd):
-    logging.debug('ssh(%s, %s)' % (host, cmd))
+def ssh(host, cmd, ns=None):
+    logging.debug('ssh(%s, %s, %s)' % (host, cmd, ns))
+
+    if ns:
+        cmd = "ip netns exec {} {}".format(ns, cmd)
+
     result = check_output(
         ['ssh', '%s' % host, cmd], stderr=DEVNULL).decode('utf-8')
     logging.debug(result)
@@ -120,7 +124,11 @@ def get_linuxbridge_path(host, interface):
         if intf.startswith('tap'):
             continue
         elif intf.startswith('vxlan-'):
+            vxlan = Vxlan(host, intf)
             path.append(Vxlan(host, intf))
+
+            if vxlan.dev:
+                path.append(Interface(host, vxlan.dev))
         else:
             path.append(Interface(host, intf))
 
@@ -253,8 +261,9 @@ class Port():
 
                 interface = ssh(
                     self.host,
-                    "ip netns exec {} ip link ls | grep tap{} | awk '{{ print $2; }}' | cut -d: -f1".
-                    format(ns, self.id[:11])).strip()
+                    "ip link ls | grep tap{} | awk '{{ print $2; }}' | cut -d: -f1".
+                    format(ns, self.id[:11]),
+                    self.ns).strip()
 
                 if not interface:
                     path.append(
@@ -299,8 +308,9 @@ class Port():
 
             interface = "{}-{}".format(intf_name, self.id[:11])
 
-            if ssh(self.host, "ip netns exec {} ip link show {}".format(
-                    ns, interface)).strip() == '':
+            if ssh(self.host, "ip link show {}".format(
+                    interface),
+                    ns).strip() == '':
                 path.append(
                     Error(self.host, "{} interface is missing".format(
                         intf_name)))
@@ -310,8 +320,8 @@ class Port():
             is_veth = bool(
                 int(
                     ssh(self.host,
-                        "ip netns exec {} cmp -s /sys/class/net/{}/ifindex /sys/class/net/{}/iflink; echo $?".
-                        format(ns, interface, interface)).strip()))
+                        "cmp -s /sys/class/net/{}/ifindex /sys/class/net/{}/iflink; echo $?".
+                        format(interface, interface), ns).strip()))
 
             if is_veth:
                 veth = Veth(self.host, interface, ns)
@@ -416,8 +426,8 @@ class L3Agent():
     def get_role(self):
         try:
             routes = int(
-                ssh(self.host, "ip netns exec qrouter-{} ip ro ls | wc -l".
-                    format(self.router.id)).strip())
+                ssh(self.host, "ip ro ls | wc -l",
+                    "qrouter-{}".format(self.router.id)).strip())
 
             if routes == 1:
                 return 'slave'
@@ -518,30 +528,46 @@ class FloatingIP():
 
 
 class Interface():
-    def __init__(self, host, name, type='Interface'):
-        self.type = type
+    def __init__(self, host, name, ns=None):
         self.host = host
         self.name = name
+        self.ns = ns
+        self.mtu = self.get_mtu()
         self.details = ''
 
         assert (name != '')
 
+
+    def get_mtu(self):
+        try:
+            mtu = ssh(self.host, "cat /sys/class/net/{}/mtu".format(self.name), self.ns).strip()
+        except:
+            mtu = None
+
+        return mtu
+
     def __repr__(self):
-        return "{:10} {} {}".format(self.type, self.name, self.details)
+        if self.ns:
+            ns = " ns={}".format(self.ns)
+        else:
+            ns = ""
+
+        if self.mtu:
+            mtu = " mtu={}".format(self.mtu)
+        else:
+            mtu = ""
+
+        return "{:10} {}{}{} {}".format(self.__class__.__name__, self.name, mtu, ns, self.details)
 
 
 class Tap(Interface):
     def __init__(self, host, name, ns=None):
-        super().__init__(host, name, 'Tap')
-        self.ns = ns
-
-        if self.ns:
-            self.details = "({})".format(self.ns)
+        super().__init__(host, name, ns)
 
 
 class Bridge(Interface):
     def __init__(self, host, name):
-        super().__init__(host, name, 'Bridge')
+        super().__init__(host, name)
         self.interfaces = self.get_interfaces()
 
     @classmethod
@@ -560,7 +586,7 @@ class Bridge(Interface):
 
 class OVSBridge(Interface):
     def __init__(self, host, name, actions):
-        super().__init__(host, name, 'OVSBridge')
+        super().__init__(host, name)
         self.details = self.parse_actions(actions)
 
     def parse_actions(self, actions):
@@ -569,7 +595,7 @@ class OVSBridge(Interface):
 
 class OVSInterface(Interface):
     def __init__(self, host, ofport):
-        super().__init__(host, ofport, 'OVSInterface')
+        super().__init__(host, ofport)
         self.ofport = ofport
         self.interface = self.get_interface()
         self.details = "{interface[name]} {interface[options]}".format(
@@ -584,22 +610,12 @@ class OVSInterface(Interface):
 
 class Veth(Interface):
     def __init__(self, host, name, ns=None):
-        super().__init__(host, name, 'Veth')
-        self.ns = ns
+        super().__init__(host, name, ns)
         self.peer = self.get_peer()
-        if ns:
-            self.details = "({})".format(self.ns)
 
     def get_peer(self):
-        if self.ns:
-            iflink = ssh(
-                self.host,
-                "ip netns exec {} cat /sys/class/net/{}/iflink".format(
-                    self.ns, self.name)).strip()
-        else:
-            iflink = ssh(
-                self.host,
-                "cat /sys/class/net/{}/iflink".format(self.name)).strip()
+        iflink = ssh(self.host,
+                "cat /sys/class/net/{}/iflink".format(self.name), self.ns).strip()
 
         return ssh(
             self.host,
@@ -609,9 +625,15 @@ class Veth(Interface):
 
 class Vxlan(Interface):
     def __init__(self, host, name):
-        super().__init__(host, name, 'Vxlan')
+        super().__init__(host, name)
         self.config = ssh(
             host, "ip -d link show {} | grep 'vxlan id'".format(name)).strip()
+
+        try:
+            self.dev = re.findall("dev ([^ ]+) ", self.config)[0]
+        except:
+            self.dev = None
+
         self.details = "({self.config})".format(self=self)
 
 
