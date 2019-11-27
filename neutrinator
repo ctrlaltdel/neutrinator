@@ -262,8 +262,8 @@ class Port():
                 interface = ssh(
                     self.host,
                     "ip link ls | grep tap{} | awk '{{ print $2; }}' | cut -d: -f1".
-                    format(ns, self.id[:11]),
-                    self.ns).strip()
+                    format(self.id[:11]),
+                    ns).strip()
 
                 if not interface:
                     path.append(
